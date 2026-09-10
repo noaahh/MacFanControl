@@ -1,6 +1,8 @@
 mod app;
 mod control;
 mod fan;
+mod gpu;
+mod processes;
 mod smc;
 mod temps;
 mod ui;
@@ -36,7 +38,9 @@ fn print_help() {
     println!("  --list      print fans and temperatures, then exit");
     println!("  --auto      restore all fans to automatic control, then exit");
     println!();
-    println!("TUI keys: ↑↓ select fan, ←→ ±100 RPM, shift←→ ±500, m manual/auto,");
+    println!("TUI keys: ↑↓ select fan/thermals, ←→ ±100 RPM, shift←→ ±500,");
+    println!("          m manual/auto when a fan is selected,");
+    println!("          c sort processes by CPU, g sort processes by GPU,");
     println!("          a all auto, f full blast, space toggle linked fans,");
     println!("          q quit (restores auto), Q quit keeping settings");
 }
@@ -61,7 +65,9 @@ fn run(args: &[String]) -> Result<(), Box<dyn std::error::Error>> {
 
     if args.iter().any(|a| a == "--auto") {
         if !smc::is_root() {
-            return Err("restoring automatic fan control requires root — run: sudo macfan --auto".into());
+            return Err(
+                "restoring automatic fan control requires root — run: sudo macfan --auto".into(),
+            );
         }
         let problems = control::force_auto(&smc, &fans);
         if problems.is_empty() {

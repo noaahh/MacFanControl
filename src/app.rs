@@ -7,6 +7,7 @@ use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, Ke
 
 use crate::control::{Cmd, Controller, Note};
 use crate::fan::{self, Fan, FanMode};
+use crate::processes::{ProcessMessage, ProcessMonitor, ProcessSort, ProcessUsage};
 use crate::smc::{Smc, is_root};
 use crate::temps::Temps;
 
@@ -28,7 +29,14 @@ pub struct App {
     pub is_root: bool,
     pub status: Option<Status>,
     pub history: Vec<VecDeque<u64>>,
+    pub thermal_history: VecDeque<u64>,
+    pub processes: Vec<ProcessUsage>,
+    pub process_sort: ProcessSort,
+    pub gpu_processes_available: bool,
+    pub gpu_process_error: Option<String>,
+    pub process_error: Option<String>,
     controller: Controller,
+    process_monitor: ProcessMonitor,
     keep_on_exit: bool,
     needs_refresh: bool,
     last_refresh: Instant,
@@ -45,6 +53,8 @@ impl App {
     ) -> App {
         let history = fans.iter().map(|_| VecDeque::new()).collect();
         let desired = vec![None; fans.len()];
+        let is_root = is_root();
+        let process_monitor = ProcessMonitor::spawn();
         let mut app = App {
             smc,
             fans,
@@ -53,10 +63,17 @@ impl App {
             model,
             selected: 0,
             linked: true,
-            is_root: is_root(),
+            is_root,
             status: None,
             history,
+            thermal_history: VecDeque::new(),
+            processes: Vec::new(),
+            process_sort: ProcessSort::Cpu,
+            gpu_processes_available: false,
+            gpu_process_error: None,
+            process_error: None,
             controller,
+            process_monitor,
             keep_on_exit: false,
             needs_refresh: false,
             last_refresh: Instant::now(),
@@ -76,10 +93,13 @@ impl App {
     ) -> Result<(), Box<dyn std::error::Error>> {
         loop {
             if self.drain_notes() {
-                return Err("fan control thread stopped unexpectedly; its safety guard restored \
+                return Err(
+                    "fan control thread stopped unexpectedly; its safety guard restored \
                             automatic control — verify with `macfan --list`"
-                    .into());
+                        .into(),
+                );
             }
+            self.drain_processes();
             if self.needs_refresh || self.last_refresh.elapsed() >= Duration::from_secs(1) {
                 self.refresh();
                 self.needs_refresh = false;
@@ -91,9 +111,11 @@ impl App {
             terminal.draw(|frame| crate::ui::draw(frame, self))?;
             if event::poll(Duration::from_millis(100))?
                 && let Event::Key(k) = event::read()?
-                    && k.kind == KeyEventKind::Press && self.on_key(k) {
-                        break;
-                    }
+                && k.kind == KeyEventKind::Press
+                && self.on_key(k)
+            {
+                break;
+            }
         }
         self.controller.send(if self.keep_on_exit {
             Cmd::QuitKeep
@@ -124,6 +146,25 @@ impl App {
         }
     }
 
+    fn drain_processes(&mut self) {
+        loop {
+            match self.process_monitor.try_recv() {
+                Ok(ProcessMessage::Snapshot {
+                    processes,
+                    gpu_available,
+                    gpu_error,
+                }) => {
+                    self.processes = processes;
+                    self.gpu_processes_available = gpu_available;
+                    self.gpu_process_error = gpu_error;
+                    self.process_error = None;
+                }
+                Ok(ProcessMessage::Error(error)) => self.process_error = Some(error),
+                Err(TryRecvError::Empty | TryRecvError::Disconnected) => return,
+            }
+        }
+    }
+
     fn refresh(&mut self) {
         for fan in &mut self.fans {
             fan::refresh(&self.smc, fan);
@@ -140,6 +181,12 @@ impl App {
                 h.pop_front();
             }
         }
+        if let Some((_, hottest)) = &self.temps.hottest {
+            self.thermal_history.push_back((*hottest * 10.0) as u64);
+            while self.thermal_history.len() > HISTORY_LEN {
+                self.thermal_history.pop_front();
+            }
+        }
     }
 
     fn on_key(&mut self, key: KeyEvent) -> bool {
@@ -154,7 +201,7 @@ impl App {
                 self.selected = self.selected.saturating_sub(1);
             }
             KeyCode::Down | KeyCode::Char('j') => {
-                self.selected = (self.selected + 1).min(self.fans.len().saturating_sub(1));
+                self.selected = (self.selected + 1).min(self.fans.len());
             }
             KeyCode::Right if shift => self.bump(500.0),
             KeyCode::Left if shift => self.bump(-500.0),
@@ -167,14 +214,19 @@ impl App {
             KeyCode::Char('m') => self.toggle_mode(),
             KeyCode::Char('a') => self.all_auto(),
             KeyCode::Char('f') => self.full_blast(),
-            KeyCode::Char(' ') => self.linked = !self.linked,
+            KeyCode::Char(' ') if self.selected < self.fans.len() => self.linked = !self.linked,
             KeyCode::Char('r') => self.refresh(),
+            KeyCode::Char('c') => self.process_sort = ProcessSort::Cpu,
+            KeyCode::Char('g') => self.process_sort = ProcessSort::Gpu,
             _ => {}
         }
         false
     }
 
     fn target_indices(&self) -> Vec<usize> {
+        if self.selected >= self.fans.len() {
+            return Vec::new();
+        }
         if self.linked {
             (0..self.fans.len()).collect()
         } else {
@@ -197,6 +249,9 @@ impl App {
     }
 
     fn toggle_mode(&mut self) {
+        if self.selected >= self.fans.len() {
+            return;
+        }
         let to_manual = self.fans[self.selected].mode != FanMode::Manual;
         for i in self.target_indices() {
             if to_manual {

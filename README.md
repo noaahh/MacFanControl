@@ -19,6 +19,11 @@ Built and tested on an Apple Silicon MacBook Pro (M3 Pro, `Mac15,7`) running mac
 ╭─ thermals ───────────────────────────────────────────────────────────────╮
 │ avg 47.7°C   hottest 79.0°C (TCMz)   215 sensors                         │
 ╰──────────────────────────────────────────────────────────────────────────╯
+╭─ top processes   c CPU   g GPU  ─────────────────────────────────────────╮
+│ #   PID     PROCESS                              CPU       GPU             │
+│ 1   7214    VideoToolbox                       118.2%     42.7%            │
+│ 2    386    WindowServer                        31.4%     18.3%            │
+╰──────────────────────────────────────────────────────────────────────────╯
 ╭─ Left Fan — rpm history ─────────────────────────────────────────────────╮
 │                                       ▂▄▆█████████████████████████       │
 │ ▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▁▆███████████████████████████       │
@@ -31,7 +36,8 @@ Built and tested on an Apple Silicon MacBook Pro (M3 Pro, `Mac15,7`) running mac
 
 - **Live dashboard** — per-fan RPM gauge, target, hardware min/max, and mode badge (`AUTO` / `MANUAL` / `SYSTEM`), refreshed every second
 - **Full thermal picture** — auto-discovers every readable temperature sensor on your machine (215 on an M3 Pro) and shows the average and the hottest one, so you can see *why* the fans are spinning
-- **RPM history sparkline** — a rolling 4-minute graph for the selected fan
+- Live process attribution with CPU and GPU sorting, refreshed once per second
+- Contextual history graph showing RPM for a selected fan or the hottest temperature for thermals
 - **Linked or independent control** — adjust both fans together (default, matches how MacBook thermals are designed) or each one separately
 - **M3/M4 thermal-manager unlock** — handles the `Ftst` diagnostic unlock that newer Apple Silicon firmware requires before it accepts manual fan control (the same sequence used by [Stats](https://github.com/exelban/stats))
 - **Sleep/wake resilient** — if macOS reclaims fan control (it does, after sleep/wake), macfan detects it within ~2 seconds and re-engages your setting
@@ -95,7 +101,7 @@ Mac15,7 · Apple M3 Pro
 
 | Key | Action |
 |-----|--------|
-| `↑` `↓` / `k` `j` | select fan |
+| `↑` `↓` / `k` `j` | select a fan or the thermals panel |
 | `←` `→` / `h` `l` | target −/+ 100 RPM |
 | `⇧←` `⇧→` / `H` `L` | target −/+ 500 RPM |
 | `+` `-` | target +/− 100 RPM |
@@ -104,10 +110,13 @@ Mac15,7 · Apple M3 Pro
 | `f` | full blast (pin at hardware max) |
 | `space` | toggle linked mode (apply changes to all fans vs. just the selected one) |
 | `r` | force an immediate refresh |
+| `c` / `g` | sort the process list by CPU / GPU load |
 | `q` / `Esc` | quit **and restore automatic control** |
 | `Q` | quit keeping your manual settings |
 
 Adjusting the speed of a fan that's in automatic mode switches it to manual, starting from its current RPM. Targets are always clamped to the hardware-reported range (`F0Mn`–`F0Mx`).
+
+The CPU and GPU process lists work in both read-only and control modes. On Apple Silicon, macfan reads each `IOAccelerator` client's cumulative `AppUsage` GPU time through IOKit and calculates its load over each one-second interval. This does not require `sudo`. GPU attribution degrades gracefully if a future macOS GPU driver stops exposing those counters.
 
 > **Note:** the *first* time you engage manual control on an M3/M4 Mac, expect a 3–6 second delay while macfan unlocks fan control from the thermal manager (status line shows progress). Subsequent adjustments are instant. See [How it works](#how-it-works).
 
@@ -201,6 +210,8 @@ cargo clippy         # lint-clean
 | `src/fan.rs` | fan discovery, mode read/write, RPM encoding (`flt`/`fpe2`), Intel fallbacks |
 | `src/control.rs` | control thread: unlock sequence, retries, re-assertion, restore guarantees |
 | `src/temps.rs` | temperature sensor discovery and polling |
+| `src/gpu.rs` | rootless Apple Silicon per-process GPU counter reader |
+| `src/processes.rs` | asynchronous per-process CPU and GPU sampling |
 | `src/app.rs` | TUI state and key handling |
 | `src/ui.rs` | ratatui rendering |
 
@@ -218,6 +229,7 @@ macfan stands on prior work that mapped this territory:
 - [agoodkind/macos-smc-fan](https://github.com/agoodkind/macos-smc-fan) — research documenting Apple Silicon fan-control behavior generation by generation
 - [hholtmann/smcFanControl](https://github.com/hholtmann/smcFanControl) — the canonical open-source SMC protocol implementation
 - [beltex/SMCKit](https://github.com/beltex/SMCKit) and [narugit/smctemp](https://github.com/narugit/smctemp) — additional protocol references
+- [Zesty0wl/mac-performance-monitor](https://github.com/Zesty0wl/mac-performance-monitor) for documenting the rootless `IOAccelerator` per-process GPU counters
 - [ratatui](https://github.com/ratatui/ratatui) — the TUI framework
 
 ## License
